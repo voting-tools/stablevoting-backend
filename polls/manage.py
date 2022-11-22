@@ -21,17 +21,15 @@ from polls.voting import is_linear, generate_columns_from_profiles, stable_votin
 
 SKIP_EMAILS = True
 
-mongo_details = 'mongodb://127.0.0.1:27017'
-#mongo_details = os.getenv('MONGO_DETAILS')
+#mongo_details = 'mongodb://127.0.0.1:27017'
+mongo_details = os.getenv('MONGO_DETAILS')
 client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details)
 
-db = client.StableVoting2.Polls
 
-#email_username = os.getenv('EMAIL_USERNAME')
-#email_pass = os.getenv('EMAIL_PASSWORD')
+db = client.StableVoting2.Polls_test
 
-email_username = 'stablevoting.org'
-email_pass = 'Condorcet'
+email_username = os.getenv('EMAIL_USERNAME')
+email_pass = os.getenv('EMAIL_PASS')
 
 conf = ConnectionConfig(
     MAIL_USERNAME = email_username,
