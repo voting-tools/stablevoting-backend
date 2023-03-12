@@ -95,7 +95,7 @@ class PollInfo(BaseModel):
     is_private: bool
     ranking: Dict[str, int] = {}
     can_view_outcome: bool
-    can_vote: bool
+    can_vote: Optional[bool]
     closing_datetime: Optional[str]
 
 class UpdatePoll(BaseModel):
