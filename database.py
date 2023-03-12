@@ -487,7 +487,7 @@ async def poll_outcome(id, owner_id, voter_id):
                 cw = prof.condorcet_winner()
 
                 try:
-                    sc_defeat = func_timeout(5, split_cycle_defeat, args=(prof,), kwargs=None)
+                    sc_defeat = func_timeout(2, split_cycle_defeat, args=(prof,), kwargs=None)
                     sc_winners = [str(c) for c in prof.candidates if not any([c2 for c2 in prof.candidates if sc_defeat.has_edge(c2,c)])]
                     defeat_relation = {str(c): {str(c2): sc_defeat.has_edge(c,c2) for c2 in prof.candidates} for c in prof.candidates }
                 except FunctionTimedOut:
@@ -496,7 +496,7 @@ async def poll_outcome(id, owner_id, voter_id):
                     defeat_relation = {str(c): {} for c in prof.candidates }
 
                 try:
-                    sv_winners, _, explanations = func_timeout(5, stable_voting_with_explanations_, args=(prof,), kwargs = {"curr_cands": None, "mem_sv_winners": {}, "explanations": {}})
+                    sv_winners, _, explanations = func_timeout(2, stable_voting_with_explanations_, args=(prof,), kwargs = {"curr_cands": None, "mem_sv_winners": {}, "explanations": {}})
                 except FunctionTimedOut:
                     sv_winners = stable_voting_faster(prof)
                     explanations = dict()
@@ -519,7 +519,7 @@ async def poll_outcome(id, owner_id, voter_id):
 
                 if cw is None: 
                     try:
-                        splitting_numbers = func_timeout(5, get_splitting_numbers, args=(prof,), kwargs=None)
+                        splitting_numbers = func_timeout(2, get_splitting_numbers, args=(prof,), kwargs=None)
                     except FunctionTimedOut:
                         splitting_numbers = {}
                     #splitting_numbers = get_splitting_numbers(prof)

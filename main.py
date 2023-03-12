@@ -80,23 +80,6 @@ async def get_poll_data(id, oid:str = None) -> PollInfo:
         )
     raise HTTPException(400, "Something went wrong")
 
-@app.get("/pd/{id}",  tags=["Polls"])
-async def get_poll_data2(id, oid:str = None) -> PollInfo:
-    print("getting poll data")
-    print("id is ", id)
-    print("oid is ", oid)
-    response = await poll_data(id, oid)
-    print(response)
-    if response is not None and "error" not in response.keys():
-        return response
-    elif response is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=response["error"],
-            headers={"X-Error": "Not found"},
-        )
-    raise HTTPException(400, "Something went wrong")
-
 @app.get("/pr/{id}",  tags=["Polls"])
 async def get_poll_ranking(id, vid:str = None) -> PollInfo:
     print("HERE get poll and ranking")
