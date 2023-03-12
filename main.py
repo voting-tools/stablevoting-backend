@@ -66,6 +66,25 @@ async def bulk_add_rankings(id, csv_file: UploadFile = File(...), overwrite: boo
 @app.get("/{id}",  tags=["Polls"])
 async def get_poll_data(id, oid:str = None) -> PollInfo:
     print("getting poll data")
+    print("id is ", id)
+    print("oid is ", oid)
+    response = await poll_data(id, oid)
+    print(response)
+    if response is not None and "error" not in response.keys():
+        return response
+    elif response is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=response["error"],
+            headers={"X-Error": "Not found"},
+        )
+    raise HTTPException(400, "Something went wrong")
+
+@app.get("/pd/{id}",  tags=["Polls"])
+async def get_poll_data2(id, oid:str = None) -> PollInfo:
+    print("getting poll data")
+    print("id is ", id)
+    print("oid is ", oid)
     response = await poll_data(id, oid)
     print(response)
     if response is not None and "error" not in response.keys():
