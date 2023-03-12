@@ -204,6 +204,15 @@ class ProfileWithTies(object):
                                     for c1 in self.candidates 
                                     for c2 in self.candidates if ((c1 != c2) and (weight_func(c1, c2) > weight_unit))])
         return mg
+    
+    def has_cycle(self):
+        try:
+            cycle = nx.find_cycle(self.margin_graph())
+        except:
+            cycle = list()
+
+        return len(cycle) != 0
+    
     def display_margin_graph(self, cmap=None, weight = 'margin'):
         # display the margin graph
         

@@ -14,11 +14,9 @@ import csv
 from pref_voting.voting_methods import stable_voting_faster
 from func_timeout import func_timeout, FunctionTimedOut
 
-
-
 client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGO_DETAILS'))
 
-#
+
 db = client.StableVoting.Polls
 
 conf = ConnectionConfig(
@@ -543,6 +541,7 @@ async def poll_outcome(id, owner_id, voter_id):
         "explanations": explanations,
         "defeats": defeat_relation,
         "has_defeats": any([len(defeat_relation[c].values()) != 0  for c in defeat_relation.keys()]),
+        "has_cycle": prof.has_cycle(),
         "splitting_numbers": splitting_numbers,
         "prof_is_linear": prof_is_linear,
         "linear_order": linear_order if prof_is_linear else [],
