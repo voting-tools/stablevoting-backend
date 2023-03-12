@@ -19,7 +19,7 @@ from func_timeout import func_timeout, FunctionTimedOut
 client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGO_DETAILS'))
 
 #
-db = client.StableVoting_Test.Polls
+db = client.StableVoting.Polls
 
 conf = ConnectionConfig(
     MAIL_USERNAME = "stablevoting.org@gmail.com",
