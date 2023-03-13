@@ -64,7 +64,7 @@ async def bulk_add_rankings(id, csv_file: UploadFile = File(...), overwrite: boo
     raise HTTPException(400, "Something went wrong")
 
 @app.get("/{id}",  tags=["Polls"])
-async def get_poll_data(id, oid:str = None) -> PollInfo:
+async def get_poll_data(id, oid:str = None):
     print("getting poll data")
     print("id is ", id)
     print("oid is ", oid)
