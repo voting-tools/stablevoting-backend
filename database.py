@@ -473,11 +473,13 @@ async def poll_outcome(id, owner_id, voter_id):
         linear_order = []
         splitting_numbers = None
         num_rows = 0
+        has_cycle = False
         columns = [[]]
 
         if can_view and len(document["ballots"]) > 0:
             prof = ProfileWithTies([r["ranking"] for r in document["ballots"]], len(document["candidates"]))
             prof.display()
+            has_cycle = prof.has_cycle()
             if document.get("is_completed", False) and document.get("result_id", None) is not None: 
                 response = True
             if not any([len(list(r.rmap.keys())) > 0 for r in prof.rankings]):
@@ -541,7 +543,7 @@ async def poll_outcome(id, owner_id, voter_id):
         "explanations": explanations,
         "defeats": defeat_relation,
         "has_defeats": any([len(defeat_relation[c].values()) != 0  for c in defeat_relation.keys()]),
-        "has_cycle": prof.has_cycle(),
+        "has_cycle": has_cycle,
         "splitting_numbers": splitting_numbers,
         "prof_is_linear": prof_is_linear,
         "linear_order": linear_order if prof_is_linear else [],
