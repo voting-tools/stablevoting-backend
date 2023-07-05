@@ -10,5 +10,6 @@ humanize
 func_timeout
 uuid
 nashpy
+numba
 
 
