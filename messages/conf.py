@@ -6,7 +6,7 @@ SKIP_EMAILS = False # if true, skip sending emails
 SV_EMAIL = ['stablevoting.org@gmail.com']
 ALL_EMAILS = ['stablevoting.org@gmail.com', 'epacuit@umd.edu','wesholliday@berkeley.edu']
 
-email_username = os.getenv('EMAIL_USERNAME')
+email_username = os.getenv('EMAIL_USERNAME') 
 print(email_username)
 email_pass = os.getenv('EMAIL_PASS')
 

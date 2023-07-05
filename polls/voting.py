@@ -1,5 +1,5 @@
 
-from pref_voting.voting_methods import split_cycle_faster
+from pref_voting.voting_methods import split_cycle
  
 def is_same_ranking(r1, r2): 
     if sorted(list(r1.keys())) == sorted(list(r2.keys())):
@@ -122,7 +122,7 @@ def stable_voting_with_explanations_(profile, curr_cands = None, mem_sv_winners 
         explanations[tuple_to_str(tuple(curr_cands))] = {} 
         return curr_cands, mem_sv_winners, explanations
 
-    sc_ws = split_cycle_faster(profile, curr_cands = curr_cands)
+    sc_ws = split_cycle(profile, curr_cands = curr_cands)
     print("sc_ws", sc_ws)
     if len(sc_ws) == 1: 
         mem_sv_winners[tuple(curr_cands)] = sc_ws

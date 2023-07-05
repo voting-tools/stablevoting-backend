@@ -150,6 +150,7 @@ class OutcomeInfo(BaseModel):
     can_view: bool
     is_closed: bool
     is_completed: bool
+    cmap: Dict[int, str]
     closing_datetime: Union[str, None]
     no_candidates_ranked: Union[bool, None]
     one_ranked_candidate: Union[bool, None]

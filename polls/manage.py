@@ -16,20 +16,22 @@ import humanize
 from func_timeout import func_timeout, FunctionTimedOut
 
 from pref_voting.profiles_with_ties import ProfileWithTies
-from pref_voting.voting_methods import split_cycle_defeat, split_cycle_faster, stable_voting_faster
+from pref_voting.voting_methods import split_cycle_defeat, stable_voting_faster, split_cycle
 from polls.models import CreatePoll, UpdatePoll
 from polls.helpers import generate_voter_ids
 from messages.helpers import participate_email
 from polls.voting import is_linear, generate_columns_from_profiles, stable_voting_with_explanations_, get_splitting_numbers, generate_csv_data
 
 from messages.conf import email_conf, ALL_EMAILS, SKIP_EMAILS
-
+import certifi
 #mongo_details = 'mongodb://localhost:27017'
 mongo_details = os.getenv('MONGO_DETAILS')
-client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details)
+print("mongo_details ", mongo_details)
+client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, tlsCAFile=certifi.where())
 
 db = client.StableVoting.Polls
 
+print(db)
 async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
     """Create a poll."""
     print("creating a poll...")
@@ -72,7 +74,7 @@ async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
 
         for em,voter_id in zip(poll_data.voter_emails, voter_ids):
             print("sending email to ", em)
-            link = f"https://stablevoting.org/vote/{result.inserted_id}/{voter_id}"
+            link = f"https://stablevoting.org/vote/{result.inserted_id}?vid={voter_id}"
             print(participate_email(poll_data.title, poll_data.description, link))
             message = MessageSchema(
                 subject=f"Participate in the poll: {poll_data.title}",
@@ -136,7 +138,7 @@ async def update_poll(id, owner_id, poll_data: UpdatePoll, background_tasks: Bac
             if len(new_voter_ids) > 0: 
                 for em,voter_id in zip(poll_data["new_voter_emails"], new_voter_ids):
                     print("sending email to ", em)
-                    link = f"https://stablevoting.org/vote/{id}/{voter_id}"
+                    link = f"https://stablevoting.org/vote/{id}?vid={voter_id}"
 
                     message = MessageSchema(
                         subject=f'Participate in the poll: {new_poll["title"]}',
@@ -510,7 +512,7 @@ async def submitted_ranking_information(id, owner_id):
     return resp
 
 async def poll_outcome(id, owner_id, voter_id):
-
+    print("TEST")
     print("Generating poll outcome for ", id)
     print("Owner id ", owner_id)
     print("Voter id ", voter_id)
@@ -518,12 +520,15 @@ async def poll_outcome(id, owner_id, voter_id):
         return {"error": "Poll not found."}
 
     document = await db.find_one({"_id": ObjectId(id)}) 
-    
+
     error_message = ''
     if document is None: # poll not found
         print("Poll not found.")
         return {"error": "Poll not found."}
     else: 
+        cand_to_cidx = {c: i for i, c in enumerate(document["candidates"])}
+        cmap = {cidx:c for c,cidx in cand_to_cidx.items()}
+
         is_voter, is_owner = voter_type(document, voter_id, owner_id)
 
         can_view = can_view_outcome(
@@ -567,7 +572,10 @@ async def poll_outcome(id, owner_id, voter_id):
             #if not can_view: 
             #    error_message = "Cannot view the outcome."
             if can_view and len(document["ballots"]) > 0:
-                prof = ProfileWithTies([r["ranking"] for r in document["ballots"]])
+
+                prof = ProfileWithTies([{cand_to_cidx[c]: rank 
+                                         for c,rank in r["ranking"].items()} 
+                                         for r in document["ballots"]])
                 prof.display()
 
                 if not any([len(list(r.rmap.keys())) > 0 for r in prof.rankings]):
@@ -582,7 +590,7 @@ async def poll_outcome(id, owner_id, voter_id):
                         defeat_relation = {str(c): {str(c2): sc_defeat.has_edge(c,c2) for c2 in prof.candidates} for c in prof.candidates }
                     except FunctionTimedOut:
                         sc_defeat = dict()
-                        sc_winners = split_cycle_faster(prof)
+                        sc_winners = split_cycle(prof)
                         defeat_relation = {str(c): {} for c in prof.candidates }
 
                     try:
@@ -606,6 +614,7 @@ async def poll_outcome(id, owner_id, voter_id):
             result = {
                 "margins": margins, 
                 "num_voters": str(num_voters),
+                "cmap": cmap,
                 "show_rankings": show_rankings, 
                 "sv_winners": sv_winners, 
                 "sc_winners": sc_winners, 
@@ -711,7 +720,7 @@ async def demo_poll_outcome(rankings):
             defeat_relation = {str(c): {str(c2): sc_defeat.has_edge(c,c2) for c2 in prof.candidates} for c in prof.candidates }
         except FunctionTimedOut:
             sc_defeat = dict()
-            sc_winners = split_cycle_faster(prof)
+            sc_winners = split_cycle(prof)
             defeat_relation = {str(c): {} for c in prof.candidates }
 
         try:
