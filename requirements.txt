@@ -9,5 +9,6 @@ pymongo
 humanize
 func_timeout
 uuid
+nashpy
 
 
