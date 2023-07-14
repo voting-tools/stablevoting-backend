@@ -27,7 +27,8 @@ import certifi
 #mongo_details = 'mongodb://localhost:27017'
 mongo_details = os.getenv('MONGO_DETAILS')
 print("mongo_details ", mongo_details)
-client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, tlsCAFile=certifi.where())
+client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, tlsCAFile=certifi.where(), tls=True)
+#client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, ssl=False)
 
 db = client.StableVoting.Polls
 
@@ -500,7 +501,12 @@ async def submitted_ranking_information(id, owner_id):
         }
 
         if len(document["ballots"]) > 0:
-            prof = ProfileWithTies([r["ranking"] for r in document["ballots"]])
+            cand_to_cidx = {c: str(i) for i, c in enumerate(document["candidates"])}
+            cmap = {str(cidx):c for c,cidx in cand_to_cidx.items()}
+
+            prof = ProfileWithTies([{cand_to_cidx[c]: rank 
+                                     for c,rank in r["ranking"].items()} 
+                                     for r in document["ballots"]])
             prof.display()
             num_voters = prof.num_voters
             print(num_voters)
@@ -508,26 +514,27 @@ async def submitted_ranking_information(id, owner_id):
             resp["num_voters"] = num_voters
             resp["num_rows"] = num_rows
             resp["columns"] = columns
-            resp["csv_data"] = generate_csv_data(prof)
+            resp["cmap"] = cmap
+            resp["csv_data"] = generate_csv_data(prof, cmap)
     return resp
 
 async def poll_outcome(id, owner_id, voter_id):
-    print("TEST")
     print("Generating poll outcome for ", id)
     print("Owner id ", owner_id)
     print("Voter id ", voter_id)
     if not ObjectId.is_valid(id): 
         return {"error": "Poll not found."}
-
+    print("Getting document...")
     document = await db.find_one({"_id": ObjectId(id)}) 
-
+    print("got document")
+    print(document)
     error_message = ''
     if document is None: # poll not found
         print("Poll not found.")
         return {"error": "Poll not found."}
     else: 
-        cand_to_cidx = {c: i for i, c in enumerate(document["candidates"])}
-        cmap = {cidx:c for c,cidx in cand_to_cidx.items()}
+        cand_to_cidx = {c: str(i) for i, c in enumerate(document["candidates"])}
+        cmap = {str(cidx):c for c,cidx in cand_to_cidx.items()}
 
         is_voter, is_owner = voter_type(document, voter_id, owner_id)
 
@@ -543,7 +550,8 @@ async def poll_outcome(id, owner_id, voter_id):
         print("is_completed", document.get("is_completed", None))
         print("can_view ", can_view)
         title = str(document["title"])
-
+        print("title", title)
+        print(document)
         closing_datetime =  dt_string(document.get("closing_datetime", None), document.get("timezone", None))
         timezone = document["timezone"] if document["timezone"] is not None else "N/A"
         is_closed = poll_closed(document.get("closing_datetime", None), document.get("timezone", None))
@@ -629,11 +637,15 @@ async def poll_outcome(id, owner_id, voter_id):
                 "columns":columns,
                 }
 
+            print("HELLO")
             if is_closed or document.get("is_completed", False): 
                 # close the poll
                 if len(sv_winners) > 1: 
                     selected_sv_winner = random.choice(sv_winners)
                     result["selected_sv_winner"] = selected_sv_winner
+
+                print("RESULT")
+                print(result)
                 await db.update_one( {"_id": ObjectId(id)}, {"$set": {"result": result, "is_completed": True}})
 
             if not document.get("is_completed", False): 

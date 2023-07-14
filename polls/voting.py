@@ -60,7 +60,7 @@ def generate_columns_from_profiles(prof):
             })
     return [[str(c["count"])] + c["col_list"] for c in cols], max_rank
 
-def generate_csv_data(profile): 
+def generate_csv_data(profile, cmap): 
     candidates = profile.candidates
     
     # generate the anonymous profile
@@ -77,7 +77,7 @@ def generate_csv_data(profile):
             anon_rankings.append([r, c])
     
     # generate the rows for the csv file
-    rows = [[str(c) for c in candidates] + [""]] 
+    rows = [[cmap[c] for c in candidates] + [""]] 
     for r,c in anon_rankings: 
         row = list()
         for cand in candidates: 

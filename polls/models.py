@@ -119,9 +119,10 @@ class RankingsInfo(BaseModel):
     num_voters: int # number of voters
     num_empty_ballots: int # number of voters that submitted empty ballots
     unranked_candidates: List[str] # list of candidates not ranked by any voters
-    columns: List[List[Union[int, str]]]
+    columns: List[List[str]]
     csv_data: List[List[Union[int, str]]] = [[]]
     num_rows: int
+    cmap: Dict[Union[int, str], str] 
 
 class Ballot(BaseModel): 
     ranking: Dict[str, int]
