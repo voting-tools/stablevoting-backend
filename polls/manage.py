@@ -681,8 +681,18 @@ async def demo_poll_outcome(rankings):
         print(r)
         for n in range(int(r["num"])): 
             ballots.append(r["ranking"])
-    prof = ProfileWithTies([r for r in ballots])
+    _prof = ProfileWithTies([r for r in ballots])
+    _prof.display()
+    curr_rankings, counts = _prof.rankings_as_dicts_counts
+    cand_to_cindex = {str(c): i for i,c in enumerate(_prof.candidates)}
+    cmap = {cindx: str(c) for c, cindx in cand_to_cindex.items()}
+
+    prof = ProfileWithTies([{cand_to_cindex[c]: r 
+                             for c, r in rank.items()} 
+                             for rank in curr_rankings], rcounts=counts)
+    
     prof.display()
+    print(cmap)
     num_ranked_cands = len(list(set([_c  for _r in prof.rankings for _c in _r.rmap.keys()])))
     if num_ranked_cands == 0: #not any([len(list(r.rmap.keys())) > 0 for r in prof.rankings]):
         columns, num_rows = generate_columns_from_profiles(prof)
@@ -702,6 +712,7 @@ async def demo_poll_outcome(rankings):
             "linear_order": list(),
             "num_rows": num_rows,
             "columns":columns,
+            "cmap": cmap,
         }
     if num_ranked_cands == 0: #not any([len(list(r.rmap.keys())) > 0 for r in prof.rankings]):
         columns, num_rows = generate_columns_from_profiles(prof)
@@ -721,6 +732,8 @@ async def demo_poll_outcome(rankings):
             "linear_order": list(),
             "num_rows": num_rows,
             "columns":columns,
+            "cmap": cmap,
+
         }
     else: 
         margins = {c1: {c2: prof.margin(c1, c2) for c2 in prof.candidates} for c1 in prof.candidates}
@@ -768,6 +781,7 @@ async def demo_poll_outcome(rankings):
             "linear_order": linear_order if prof_is_linear else [],
             "num_rows": num_rows,
             "columns":columns,
+            "cmap": cmap,
             }
         if len(sv_winners) > 1: 
             selected_sv_winner = random.choice(sv_winners)
