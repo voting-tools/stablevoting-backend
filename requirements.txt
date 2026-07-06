@@ -2,8 +2,7 @@
 pref-voting
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
-motor==3.6.0
-pymongo==4.9.0  # Changed to be compatible with motor 3.6.0
+pymongo==4.17.0  # native async (AsyncMongoClient); replaced the deprecated motor driver
 pydantic==2.10.3
 python-multipart==0.0.18
 

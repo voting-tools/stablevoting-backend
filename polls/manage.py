@@ -9,7 +9,7 @@
 from fastapi import BackgroundTasks, File, UploadFile
 import arrow
 import random
-import motor.motor_asyncio
+from pymongo import AsyncMongoClient
 import csv
 import io
 import os
@@ -28,22 +28,16 @@ from polls.voting import is_linear, generate_columns_from_profiles, stable_votin
 from messages.conf import SKIP_EMAILS, send_email
 import certifi
 
-# # MongoDB connection
-# mongo_details = os.getenv('MONGO_DETAILS')
-# print("mongo_details ", mongo_details)
-# client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, tlsCAFile=certifi.where(), tls=True)
-# db = client.StableVoting.Polls
-
 # MongoDB connection
 mongo_details = os.getenv('MONGODB_URI')
 
 # Check if we're in development (local MongoDB doesn't use SSL)
 if mongo_details and ('localhost' in mongo_details or '127.0.0.1' in mongo_details):
     # Local connection without SSL
-    client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details)
+    client = AsyncMongoClient(mongo_details)
 else:
     # Production connection with SSL
-    client = motor.motor_asyncio.AsyncIOMotorClient(mongo_details, tlsCAFile=certifi.where(), tls=True)
+    client = AsyncMongoClient(mongo_details, tlsCAFile=certifi.where(), tls=True)
 
 data_base = os.getenv('MONGO_DB_NAME', 'StableVoting')
 db = client[data_base].Polls
@@ -135,7 +129,7 @@ async def update_poll(id, owner_id, poll_data: UpdatePoll, background_tasks: Bac
     if not ObjectId.is_valid(id):
         return {"error": "Poll not found."}
     document = await db.find_one({"_id": ObjectId(id)})
-    poll_data = poll_data.dict()
+    poll_data = poll_data.model_dump()
     if document is None: # poll not found
         return {"error": "Poll not found."}
     else: 
@@ -485,7 +479,7 @@ async def submit_ballot(ballot, id, vid, allow_multiple_vote_pwd):
 
     allow_multiple_votes = document.get("allow_multiple_votes", False) or _multiple_vote_allowed(allow_multiple_vote_pwd)
 
-    b = ballot.dict()
+    b = ballot.model_dump()
     if vid is not None:
         b["voter_id"] = vid
 

@@ -11,8 +11,8 @@ class CreatePoll(BaseModel):
     is_private: bool = False # if True, only accept votes from specified list of voters
     voter_emails: List[str] = [] # list of emails for the voters, not saved in the database
     show_rankings: bool = True # show the rankings on the outcome page
-    closing_datetime: Optional[str] # when the poll closes
-    timezone: Optional[str] # timezone of the person creating the poll
+    closing_datetime: Optional[str] = None # when the poll closes
+    timezone: Optional[str] = None # timezone of the person creating the poll
     can_view_outcome_before_closing: bool = True # if True, can view the outcome before the poll closes
     show_outcome: bool = True # if True, anyone can view the outcome of the poll with the results link
     allow_multiple_votes: bool = False # allow multiple votes from the same ip address
