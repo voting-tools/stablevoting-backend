@@ -107,12 +107,14 @@ def get_splitting_numbers(profile):
     return splitting_numbers
 
 
-def stable_voting_with_explanations_(profile, curr_cands = None, mem_sv_winners = {}, explanations = {}): 
+def stable_voting_with_explanations_(profile, curr_cands = None, mem_sv_winners = None, explanations = None):
     '''
-    Determine the Stable Voting winners for the profile while keeping track 
-    of the winners in any subprofiles checked during computation. 
+    Determine the Stable Voting winners for the profile while keeping track
+    of the winners in any subprofiles checked during computation.
     '''
-    
+    mem_sv_winners = {} if mem_sv_winners is None else mem_sv_winners
+    explanations = {} if explanations is None else explanations
+
     # curr_cands is the set of candidates who have not been removed
     curr_cands = curr_cands if not curr_cands is None else profile.candidates
     sv_winners = list()

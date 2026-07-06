@@ -1,6 +1,16 @@
 
+from bson import ObjectId
 from messages.conf import send_email, send_batch_emails, SKIP_EMAILS
 from messages.helpers import participate_email
+
+
+async def is_poll_owner(id, oid):
+    """Return True if oid is the owner id of the poll with the given id."""
+    from polls.manage import db
+    if oid is None or not ObjectId.is_valid(id):
+        return False
+    document = await db.find_one({"_id": ObjectId(id)})
+    return document is not None and document.get("owner_id") == oid
 
 
 async def send_contact_form_email(message, background_tasks, vid=None, oid=None):
@@ -37,7 +47,10 @@ async def send_contact_form_email(message, background_tasks, vid=None, oid=None)
 
 async def send_emails_to_voters(emails_data, id, background_tasks, oid=None):
     """Send invitation emails to voters"""
-    
+
+    if not await is_poll_owner(id, oid):
+        return {"error": "You do not have permission to send emails for this poll."}
+
     # Generate email content
     html_body = participate_email(
         emails_data.title,
@@ -61,7 +74,10 @@ async def send_emails_to_voters(emails_data, id, background_tasks, oid=None):
 
 async def send_email_to_owner(emails_data, id, background_tasks, oid=None):
     """Send poll creation confirmation to owner"""
-    
+
+    if not await is_poll_owner(id, oid):
+        return {"error": "You do not have permission to send emails for this poll."}
+
     html_body = f"""
     <html>
     <body>

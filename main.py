@@ -39,19 +39,4 @@ async def root():
 @app.get('/health')
 async def health_check():
     """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "environment": os.getenv("ENVIRONMENT", "unknown"),
-        "skip_emails": os.getenv("SKIP_EMAILS", "unknown")
-    }
-
-@app.get('/test-email')
-async def test_email():
-    from messages.conf import send_email, SKIP_EMAILS
-    print(f"Test endpoint: SKIP_EMAILS = {SKIP_EMAILS}")
-    result = await send_email(
-        to_email="epacuit@gmail.com",
-        subject="Test Email",
-        html_body="<h1>Test</h1><p>This is a test</p>"
-    )
-    return {"skip_emails": SKIP_EMAILS, "result": result}
+    return {"status": "healthy"}

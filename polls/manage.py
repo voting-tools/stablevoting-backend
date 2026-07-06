@@ -10,9 +10,8 @@ from fastapi import BackgroundTasks, File, UploadFile
 import arrow
 import random
 import motor.motor_asyncio
-from pymongo import read_concern
-import uuid
 import csv
+import io
 import os
 from bson import ObjectId
 import humanize
@@ -37,7 +36,6 @@ import certifi
 
 # MongoDB connection
 mongo_details = os.getenv('MONGODB_URI')
-print("mongo_details ", mongo_details)
 
 # Check if we're in development (local MongoDB doesn't use SSL)
 if mongo_details and ('localhost' in mongo_details or '127.0.0.1' in mongo_details):
@@ -50,7 +48,11 @@ else:
 data_base = os.getenv('MONGO_DB_NAME', 'StableVoting')
 db = client[data_base].Polls
 
-print(db)
+
+def _multiple_vote_allowed(pwd):
+    """True only when the debug password is set in the environment and matches."""
+    expected = os.getenv('ALLOW_MULTIPLE_VOTE_PWD')
+    return expected is not None and pwd == expected
 
 
 async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
@@ -130,9 +132,10 @@ async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
 async def update_poll(id, owner_id, poll_data: UpdatePoll, background_tasks: BackgroundTasks):
     """Update a poll. """
 
-    print("updating poll ", id)
-    document = await db.find_one({"_id": ObjectId(id)}) 
-    poll_data = poll_data.dict() 
+    if not ObjectId.is_valid(id):
+        return {"error": "Poll not found."}
+    document = await db.find_one({"_id": ObjectId(id)})
+    poll_data = poll_data.dict()
     if document is None: # poll not found
         return {"error": "Poll not found."}
     else: 
@@ -211,7 +214,7 @@ async def update_poll(id, owner_id, poll_data: UpdatePoll, background_tasks: Bac
 # All other functions remain the same - no email sending in them
 async def delete_poll(id, oid):
     """Delete the poll given the owner id."""
-    if len(id) != 24: 
+    if not ObjectId.is_valid(id):
         return {"error": "Poll not found. Invalid poll id."}
 
     document = await db.find_one({"_id": ObjectId(id)})
@@ -421,26 +424,6 @@ async def regenerate_voter_link(poll_id: str, voter_id: str, owner_id: str, back
         }
     else:
         return {"error": "Failed to generate new link."}
-    
-async def delete_ballot(id, vid):
-    """Given a voter id, delete a ballot from the poll"""
-    document = await db.find_one({"_id": ObjectId(id)})  
-    if document is None: # poll not found
-        return {"error": "Poll not found."}
-    else: 
-        ballots = document["ballots"]
-        if document["is_private"] and (vid is not None and vid in document["voter_ids"]): 
-            for bidx, b in enumerate(ballots): 
-                if b["voter_id"] == vid: 
-                    # update
-                    ballots.pop(bidx)
-                    await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": ballots}})
-                    return {"success": "Ballot deleted."}
-        elif document["is_private"] and (vid is  None or vid not in document["voter_ids"]): 
-            return {"error": "Voter id not found, cannot delete the ballot."}
-        elif not document["is_private"]: 
-            return {"error": "Can only delete ballots in private polls."}
-        return {"error": "Ballot not found."}
 
 
 async def delete_all_ballots(id, owner_id):
@@ -483,107 +466,117 @@ async def delete_all_ballots(id, owner_id):
 async def submit_ballot(ballot, id, vid, allow_multiple_vote_pwd):
     """Submit a ballot to the poll."""
 
-    allow_multiple_vote_from_url = allow_multiple_vote_pwd == os.getenv('ALLOW_MULTIPLE_VOTE_PWD')
-    print("allow_multiple_vote_from_url: ", allow_multiple_vote_from_url)
-    read_concern.ReadConcern('linearizable')
-    document = await db.find_one({"_id": ObjectId(id)}) 
+    if not ObjectId.is_valid(id):
+        return {"error": "Poll not found."}
+    document = await db.find_one({"_id": ObjectId(id)})
     if document is None: # poll not found
         return {"error": "Poll not found."}
-    else: 
-        allow_mutliple_votes = document.get("allow_multiple_votes", False) or allow_multiple_vote_from_url
-        ballots = document["ballots"]
-        if document["is_private"] and (vid is not None and vid in document["voter_ids"]): 
-            for bidx, b in enumerate(ballots): 
-                if b["voter_id"] == vid: 
-                    b = ballot.dict()
-                    b["voter_id"] = vid
-                    # update
-                    ballots[bidx] = b
-                    await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": ballots}})
-                    return {"success": "Ballot submitted."}
-        elif document["is_private"] and (vid is  None or vid not in document["voter_ids"]): 
+
+    # do not accept votes once the poll is completed or its closing time has passed
+    if document.get("is_completed", False) or poll_closed(
+            document.get("closing_datetime", None), document.get("timezone", None)):
+        return {"error": "The poll is no longer accepting votes."}
+
+    # only candidates that belong to the poll may be ranked; a ballot ranking an
+    # unknown candidate would otherwise crash the results and rankings pages
+    candidates = set(document.get("candidates", []))
+    if not set(ballot.ranking.keys()).issubset(candidates):
+        return {"error": "The ballot ranks a candidate that is not in the poll."}
+
+    allow_multiple_votes = document.get("allow_multiple_votes", False) or _multiple_vote_allowed(allow_multiple_vote_pwd)
+
+    b = ballot.dict()
+    if vid is not None:
+        b["voter_id"] = vid
+
+    if document["is_private"]:
+        if vid is None or vid not in document["voter_ids"]:
             return {"error": "The poll is private."}
-        elif not document["is_private"]: 
-            if not allow_mutliple_votes and ballot.ip != "n/a":
-                for b in ballots: 
-                    if b["ip"] == ballot.ip:
-                        return {"error": "Already submitted a ballot."}
-        b = ballot.dict()
-        if vid is not None: 
-            b["voter_id"] = vid
-        ballots.append(b)
-        await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": ballots}})
+        # atomically replace this voter's existing ballot, if there is one
+        result = await db.update_one(
+            {"_id": ObjectId(id), "ballots.voter_id": vid},
+            {"$set": {"ballots.$": b}})
+        if result.matched_count > 0:
+            return {"success": "Ballot submitted."}
+    elif not allow_multiple_votes and ballot.ip not in (None, "n/a"):
+        # atomically append only if no ballot with this ip exists yet
+        result = await db.update_one(
+            {"_id": ObjectId(id), "ballots.ip": {"$ne": ballot.ip}},
+            {"$push": {"ballots": b}})
+        if result.matched_count == 0:
+            return {"error": "Already submitted a ballot."}
         return {"success": "Ballot submitted."}
+
+    await db.update_one({"_id": ObjectId(id)}, {"$push": {"ballots": b}})
+    return {"success": "Ballot submitted."}
 
 
 async def delete_ballot(id, vid):
     """Given a voter id, delete a ballot from the poll"""
-    document = await db.find_one({"_id": ObjectId(id)})  
+    if not ObjectId.is_valid(id):
+        return {"error": "Poll not found."}
+    document = await db.find_one({"_id": ObjectId(id)})
     if document is None: # poll not found
         return {"error": "Poll not found."}
-    else: 
-        ballots = document["ballots"]
-        if document["is_private"] and (vid is not None and vid in document["voter_ids"]): 
-            for bidx, b in enumerate(ballots): 
-                if b["voter_id"] == vid: 
-                    # update
-                    ballots.pop(bidx)
-                    await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": ballots}})
-                    return {"success": "Ballot deleted."}
-        elif document["is_private"] and (vid is  None or vid not in document["voter_ids"]): 
-            return {"error": "Voter id not found, cannot delete the ballot."}
-        elif not document["is_private"]: 
-            return {"error": "Can only delete ballots in private polls."}
-        return {"error": "Ballot not found."}
+    if not document["is_private"]:
+        return {"error": "Can only delete ballots in private polls."}
+    if vid is None or vid not in document["voter_ids"]:
+        return {"error": "Voter id not found, cannot delete the ballot."}
+    result = await db.update_one(
+        {"_id": ObjectId(id)}, {"$pull": {"ballots": {"voter_id": vid}}})
+    if result.modified_count > 0:
+        return {"success": "Ballot deleted."}
+    return {"error": "Ballot not found."}
 
 
-async def add_rankings(id, owner_id, csv_file, overwrite): 
+async def add_rankings(id, owner_id, csv_file, overwrite):
     """add rankings to a poll from a csv file."""
-    document = await db.find_one({"_id": ObjectId(id)})  
+    if not ObjectId.is_valid(id):
+        return {"error": "Poll not found."}
+    document = await db.find_one({"_id": ObjectId(id)})
     if document is None: # poll not found
         return {"error": "Poll not found."}
-    else: 
-        if owner_id != document["owner_id"]:
-            return {"error": "Only the poll creater can add rankings to a poll."}
-        else: 
-            file_location = f"./tmpcsvfiles/{str(uuid.uuid4())}-{csv_file.filename}"
-            print(file_location)
-            new_ballots = list()
-            candidates = document["candidates"]
-            with open(file_location, "wb+") as file_object:
-                print("Writing file....")
-                file_object.write(csv_file.file.read())
-            with open(file_location) as csvfile:
-                ranking_reader = csv.reader(csvfile, delimiter=',')
-                _cands = next(ranking_reader)
-                cands = [c.strip() for c in _cands]
-                num_cands = len(candidates)
-                if not sorted(candidates) == sorted(cands[0:num_cands]):
-                    print({"error": "The candidates in the file do not match the candidates in the poll."})
-                        
-                new_ballots=list()
-                for rowidx, row in enumerate(ranking_reader):
-                    if len([v for v in row if v.strip() != '']) == 0: 
-                        continue
-                    num_ballot = int(row[num_cands]) if len(row) > num_cands and row[num_cands] != '' and row[num_cands].isdigit() else 1
-                    for nb in range(num_ballot): 
-                        new_ballots += [{
-                            "ranking": {c:int(r) for c,r in zip(cands, row[0:num_cands]) if r != ''},
-                            "voter_id": f"bulk{rowidx}_{nb+1}",
-                            "submission_date": None,
-                            "ip": csv_file.filename
-                        }] 
+    if owner_id != document["owner_id"]:
+        return {"error": "Only the poll creater can add rankings to a poll."}
 
-                print(new_ballots)
-                curr_ballots = document["ballots"]
-                if overwrite: 
-                    await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": new_ballots}})
-                    success_message = f"Replaced all the ballots with {len(new_ballots)} ballots in the poll: {document['title']}."
-                else: 
-                    await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": curr_ballots + new_ballots}})
-                    success_message = f"Added {len(new_ballots)} ballots to the poll: {document['title']}."
-                os.remove(file_location)
-                return {"success": success_message}
+    candidates = document["candidates"]
+    num_cands = len(candidates)
+
+    # parse the upload in memory: no temp file to write, leak, or traverse
+    csvfile = io.TextIOWrapper(csv_file.file, encoding="utf-8", errors="replace")
+    ranking_reader = csv.reader(csvfile, delimiter=',')
+    try:
+        _cands = next(ranking_reader)
+    except StopIteration:
+        return {"error": "The file is empty."}
+    cands = [c.strip() for c in _cands]
+    if not sorted(candidates) == sorted(cands[0:num_cands]):
+        return {"error": "The candidates in the file do not match the candidates in the poll."}
+
+    new_ballots = list()
+    rowidx = 0
+    try:
+        for rowidx, row in enumerate(ranking_reader):
+            if len([v for v in row if v.strip() != '']) == 0:
+                continue
+            num_ballot = int(row[num_cands]) if len(row) > num_cands and row[num_cands] != '' and row[num_cands].isdigit() else 1
+            for nb in range(num_ballot):
+                new_ballots += [{
+                    "ranking": {c:int(r) for c,r in zip(cands, row[0:num_cands]) if r.strip() != ''},
+                    "voter_id": f"bulk{rowidx}_{nb+1}",
+                    "submission_date": None,
+                    "ip": csv_file.filename
+                }]
+    except ValueError:
+        return {"error": f"Row {rowidx + 2} of the file contains a rank that is not a number."}
+
+    if overwrite:
+        await db.update_one( {"_id": ObjectId(id)}, {"$set": {"ballots": new_ballots}})
+        success_message = f"Replaced all the ballots with {len(new_ballots)} ballots in the poll: {document['title']}."
+    else:
+        await db.update_one( {"_id": ObjectId(id)}, {"$push": {"ballots": {"$each": new_ballots}}})
+        success_message = f"Added {len(new_ballots)} ballots to the poll: {document['title']}."
+    return {"success": success_message}
 
 
 ###
@@ -636,26 +629,15 @@ def voter_type(poll_data, vid, oid = None):
     return is_voter, is_owner
 
 
-def close_poll(id, document, result): 
-    """Close the poll."""
+async def poll_ranking_information(id, vid, allowmultiplevote):
 
-
-def open_poll(id, document, result): 
-    """Open the poll."""
-
-
-async def poll_ranking_information(id, vid, allowmultiplevote): 
-    read_concern.ReadConcern('linearizable')
-    print("id ", id)
-
-    allow_multiple_vote = allowmultiplevote == os.getenv('ALLOW_MULTIPLE_VOTE_PWD')
-
-    if not ObjectId.is_valid(id): 
+    def not_found_response():
         return {
             "error": "Poll not found.",
             "poll_found": False,
             "title": "N/A",
-            "allow_multiple_vote": allow_multiple_vote,
+            "allow_multiple_vote": _multiple_vote_allowed(allowmultiplevote),
+            "hide_description": False,
             "closing_datetime": "n/a",
             "timezone": "n/a",
             "is_closed": True,
@@ -664,26 +646,15 @@ async def poll_ranking_information(id, vid, allowmultiplevote):
             "can_view_outcome": False
             }
 
+    if not ObjectId.is_valid(id):
+        return not_found_response()
 
-    document = await db.find_one({"_id": ObjectId(id)})  
-    print(document) 
-
-    allow_multiple_vote = document["allow_multiple_votes"] or allowmultiplevote == os.getenv('ALLOW_MULTIPLE_VOTE_PWD')
+    document = await db.find_one({"_id": ObjectId(id)})
 
     if document is None: # poll not found
-        return {
-            "error": "Poll not found.",
-            "poll_found": False,
-            "title": "N/A",
-            "allow_multiple_vote": allow_multiple_vote,
-            "hide_description": document["hide_description"],
-            "closing_datetime": "n/a",
-            "timezone": "n/a",
-            "is_closed": True,
-            "is_completed": True,
-            "can_vote": False,
-            "can_view_outcome": False
-            }
+        return not_found_response()
+
+    allow_multiple_vote = document.get("allow_multiple_votes", False) or _multiple_vote_allowed(allowmultiplevote)
 
     # vid could either be a voter id or the owner id
     is_voter, is_owner = voter_type(document, vid, vid)
@@ -722,12 +693,12 @@ async def poll_ranking_information(id, vid, allowmultiplevote):
                 is_voter)
     
     resp = {
-        "title": document["title"],
-        "description": document["description"],
-        "hide_description": document["hide_description"],
-        "candidates": document["candidates"],
+        "title": document.get("title", ""),
+        "description": document.get("description", ""),
+        "hide_description": document.get("hide_description", False),
+        "candidates": document.get("candidates", []),
         "allow_multiple_vote": allow_multiple_vote,
-        "is_private": document["is_private"],
+        "is_private": document.get("is_private", False),
         "ranking": {},
         "closing_datetime_str": dt_string(document.get("closing_datetime", None), document.get("timezone", None)),
         "timezone": document.get("timezone", "n/a"),
@@ -747,18 +718,14 @@ async def poll_ranking_information(id, vid, allowmultiplevote):
 
 async def submitted_ranking_information(id, owner_id):
 
-    print("Ranking information for ", id)
-    print("Owner id ", owner_id)
-    if len(id) != 24: 
-        print("Invalid id.")
+    if not ObjectId.is_valid(id):
         return {"error": "Poll not found."}
-    
-    document = await db.find_one({"_id": ObjectId(id)}) 
-    
+
+    document = await db.find_one({"_id": ObjectId(id)})
+
     if document is None: # poll not found
-        print("Poll not found.")
         return {"error": "Poll not found."}
-    else: 
+    else:
         is_voter, is_owner = voter_type(document, owner_id, owner_id)
 
         if not is_owner: 
@@ -832,7 +799,7 @@ async def poll_outcome(id, owner_id, voter_id):
         print("title", title)
         print(document)
         closing_datetime =  dt_string(document.get("closing_datetime", None), document.get("timezone", None))
-        timezone = document["timezone"] if document["timezone"] is not None else "N/A"
+        timezone = document.get("timezone") or "N/A"
         is_closed = poll_closed(document.get("closing_datetime", None), document.get("timezone", None))
         print("is closed", is_closed)
         print(document.get("is_completed", False))
@@ -913,24 +880,20 @@ async def poll_outcome(id, owner_id, voter_id):
                 "columns":columns,
                 }
 
-            print("HELLO")
-            if is_closed or document.get("is_completed", False): 
-                # close the poll
-                if len(sv_winners) > 1: 
+            if is_closed or document.get("is_completed", False):
+                # close the poll and save the result (including the selected winner if there is a tie)
+                if len(sv_winners) > 1:
                     selected_sv_winner = random.choice(sv_winners)
                     result["selected_sv_winner"] = selected_sv_winner
 
-                print("RESULT")
-                print(result)
                 await db.update_one( {"_id": ObjectId(id)}, {"$set": {"result": result, "is_completed": True}})
-
-            if not document.get("is_completed", False): 
-                # remove the saved result
+            else:
+                # the poll is still open, so remove any saved result
                 await db.update_one( {"_id": ObjectId(id)}, {"$set": {"result": None}})
 
     result["title"] = title
-    result["is_closed"] = is_closed 
-    result["is_completed"] = document['is_completed']
+    result["is_closed"] = is_closed
+    result["is_completed"] = document.get("is_completed", False) or is_closed
     result["can_view"] = can_view
     result["closing_datetime"] = closing_datetime
     result["timezone"] = timezone
@@ -990,28 +953,7 @@ async def demo_poll_outcome(rankings):
             "columns":columns,
             "cmap": cmap,
         }
-    if num_ranked_cands == 0: #not any([len(list(r.rmap.keys())) > 0 for r in prof.rankings]):
-        columns, num_rows = generate_columns_from_profiles(prof)
-        result = {
-            "no_candidates_ranked": True,
-            "margins": {}, 
-            "num_voters": str(prof.num_voters),
-            "show_rankings": show_rankings, 
-            "sv_winners": list(), 
-            "sc_winners": list(), 
-            "selected_sv_winner": None, # only set if the poll is completed
-            "condorcet_winner": None, 
-            "explanations": {},
-            "defeats": {},
-            "splitting_numbers": {},
-            "prof_is_linear": False,
-            "linear_order": list(),
-            "num_rows": num_rows,
-            "columns":columns,
-            "cmap": cmap,
-
-        }
-    else: 
+    else:
         margins = {c1: {c2: prof.margin(c1, c2) for c2 in prof.candidates} for c1 in prof.candidates}
         condorcet_winner = prof.condorcet_winner()
 

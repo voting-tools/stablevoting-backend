@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, File, UploadFile
+from fastapi import APIRouter, HTTPException, BackgroundTasks, File, Request, UploadFile
 from fastapi.responses import StreamingResponse  # ADD THIS
 from typing import Optional
 from io import BytesIO  # ADD THIS
@@ -130,13 +130,17 @@ async def get_information_for_ranking(id, vid:Optional[str]=None, allowmultiplev
 
 
 @router.post("/polls/vote/{id}",  tags=["polls"])
-async def submit_a_ballot(id, 
-                          ballot: Ballot, 
-                          vid:Optional[str]=None, 
-                          oid:Optional[str]=None, 
+async def submit_a_ballot(id,
+                          ballot: Ballot,
+                          request: Request,
+                          vid:Optional[str]=None,
+                          oid:Optional[str]=None,
                           allowmultiplevote:Optional[str]=None):
-    
-    print("allowmultiplevote", allowmultiplevote)
+
+    # the voter's address is derived from the request, never trusted from the client
+    forwarded = request.headers.get("x-forwarded-for", "")
+    ballot.ip = forwarded.split(",")[0].strip() if forwarded else (
+        request.client.host if request.client else "n/a")
     response = await submit_ballot(ballot, id, vid, allowmultiplevote)
     if response is not None and "error" not in response.keys():
         return response
