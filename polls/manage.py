@@ -106,6 +106,24 @@ def _ballot_type(rmap, ncand):
             "ties": has_ties, "bullet": len(ranked) == 1}
 
 
+def _plurality_ws(prof):
+    """Approval-at-top plurality winners: each voter gives one point to every
+    candidate at their top (first) rank; a voter tied k-at-top counts for all k.
+    Returns the set of top-scoring candidates (as strings), or None."""
+    scores = {c: 0 for c in prof.candidates}
+    for r, cnt in zip(prof.rankings, prof.rcounts):
+        if len(r.rmap) == 0:
+            continue
+        top = min(r.rmap.values())
+        for c, rk in r.rmap.items():
+            if rk == top and c in scores:
+                scores[c] += cnt
+    if not scores or max(scores.values()) == 0:
+        return None
+    mx = max(scores.values())
+    return frozenset(str(c) for c in scores if scores[c] == mx)
+
+
 async def superuser_stats():
     """Analytics over every poll for the super-user dashboard: totals, size and
     Condorcet distributions, poll-creation time series, ballot-type mix, and
@@ -115,8 +133,8 @@ async def superuser_stats():
 
     def winset(fn, prof):
         try:
-            return frozenset(str(c) for c in func_timeout(3, fn, args=(prof,)))
-        except Exception:
+            return frozenset(str(c) for c in func_timeout(2, fn, args=(prof,)))
+        except BaseException:
             return None
 
     CAND_B = [(2, 2, "2"), (3, 3, "3"), (4, 4, "4"), (5, 5, "5"), (6, 7, "6-7"),
@@ -129,12 +147,18 @@ async def superuser_stats():
     cand_hist, voter_hist, by_month, pair_diff = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
     wset_sizes, wset_counts = defaultdict(float), defaultdict(int)
     cw = wcw = cl = wcl = cycle = restricted = 0
+    closed_ct = private_ct = 0
+    sv_unique = sv_tied = plur_ne = plur_base = 0
     bt_sums = {"linear": 0.0, "truncated": 0.0, "ties": 0.0, "bullet": 0.0}
     bt_polls = 0
 
-    cursor = db.find({}, {"candidates": 1, "ballots": 1})
+    cursor = db.find({}, {"candidates": 1, "ballots": 1, "is_completed": 1, "is_private": 1})
     async for doc in cursor:
         total += 1
+        if doc.get("is_completed"):
+            closed_ct += 1
+        if doc.get("is_private"):
+            private_ct += 1
         cands = doc.get("candidates", []) or []
         ballots = doc.get("ballots", []) or []
         ncand, nb = len(cands), len(ballots)
@@ -195,6 +219,23 @@ async def superuser_stats():
         except Exception:
             pass
 
+        # Stable Voting winner set (unique vs. tied) + plurality-vs-SV agreement.
+        # Skip very large polls, where Stable Voting is infeasible to compute.
+        sv = winset(stable_voting, prof) if ncand <= 12 else None
+        if sv is not None:
+            if len(sv) == 1:
+                sv_unique += 1
+            else:
+                sv_tied += 1
+            try:
+                pl = _plurality_ws(prof)
+            except Exception:
+                pl = None
+            if pl is not None:
+                plur_base += 1
+                if pl != sv:
+                    plur_ne += 1
+
         if nb >= 5 and ncand >= 3:
             ws = {name: winset(fn, prof) for name, fn in METHODS.items()}
             restricted += 1
@@ -226,6 +267,9 @@ async def superuser_stats():
         "cand": dict(cand_hist),
         "voter": dict(voter_hist),
         "cond": {"cw": cw, "weak_cw": wcw, "cl": cl, "weak_cl": wcl, "cycle": cycle, "base": with_ballots},
+        "status": {"closed": closed_ct, "open": total - closed_ct, "private": private_ct, "public": total - private_ct},
+        "sv": {"unique": sv_unique, "tied": sv_tied, "base": sv_unique + sv_tied},
+        "plurality": {"ne_sv": plur_ne, "base": plur_base},
         "ts": sorted(by_month.items()),
         "pair": dict(pair_diff),
         "restricted": restricted,
