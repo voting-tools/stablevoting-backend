@@ -127,6 +127,7 @@ async def superuser_stats():
     total = with_ballots = total_votes = 0
     cand_counts, voter_counts = [], []
     cand_hist, voter_hist, by_month, pair_diff = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    wset_sizes, wset_counts = defaultdict(float), defaultdict(int)
     cw = wcw = cl = wcl = cycle = restricted = 0
     bt_sums = {"linear": 0.0, "truncated": 0.0, "ties": 0.0, "bullet": 0.0}
     bt_polls = 0
@@ -197,31 +198,38 @@ async def superuser_stats():
         if nb >= 5 and ncand >= 3:
             ws = {name: winset(fn, prof) for name, fn in METHODS.items()}
             restricted += 1
+            for name in MNAMES:
+                if ws[name] is not None:
+                    wset_sizes[name] += len(ws[name])
+                    wset_counts[name] += 1
             for i in range(len(MNAMES)):
                 for j in range(i + 1, len(MNAMES)):
                     a, b = MNAMES[i], MNAMES[j]
                     if ws[a] is not None and ws[b] is not None and ws[a] != ws[b]:
                         pair_diff[a + "|" + b] += 1
 
-    def median(xs):
+    def summary(xs):
         if not xs:
-            return 0
+            return {"mean": 0, "median": 0, "std": 0, "max": 0}
         s = sorted(xs)
         n = len(s)
-        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+        med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+        mean = sum(s) / n
+        std = (sum((x - mean) ** 2 for x in s) / n) ** 0.5
+        return {"mean": round(mean, 1), "median": med, "std": round(std, 1), "min": s[0], "max": s[-1]}
 
     return {
         "total": total,
         "withb": with_ballots,
         "total_votes": total_votes,
-        "median_voters": median(voter_counts),
-        "median_candidates": median(cand_counts),
+        "size": {"voters": summary(voter_counts), "candidates": summary(cand_counts)},
         "cand": dict(cand_hist),
         "voter": dict(voter_hist),
         "cond": {"cw": cw, "weak_cw": wcw, "cl": cl, "weak_cl": wcl, "cycle": cycle, "base": with_ballots},
         "ts": sorted(by_month.items()),
         "pair": dict(pair_diff),
         "restricted": restricted,
+        "method_winset": {n: round(wset_sizes[n] / wset_counts[n], 3) for n in MNAMES if wset_counts[n]},
         "bt": {k: (bt_sums[k] / bt_polls if bt_polls else 0) for k in bt_sums},
     }
 
