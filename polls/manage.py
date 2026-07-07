@@ -15,10 +15,15 @@ import io
 import os
 from bson import ObjectId
 import humanize
+import networkx as nx
+from collections import defaultdict
 from func_timeout import func_timeout, FunctionTimedOut
 
 from pref_voting.profiles_with_ties import ProfileWithTies
-from pref_voting.voting_methods import split_cycle_defeat, stable_voting, split_cycle
+from pref_voting.voting_methods import (
+    split_cycle_defeat, stable_voting, split_cycle,
+    minimax, copeland, MWSL, borda_for_profile_with_ties, approval_irv,
+)
 from polls.models import CreatePoll, UpdatePoll
 from polls.helpers import generate_voter_ids
 from messages.helpers import participate_email
@@ -76,6 +81,149 @@ async def superuser_list_polls():
     ]
     cursor = await db.aggregate(pipeline)
     return await cursor.to_list(length=None)
+
+
+_SU_METHODS = None
+def _su_methods():
+    global _SU_METHODS
+    if _SU_METHODS is None:
+        _SU_METHODS = {
+            "Minimax": minimax, "Copeland": copeland, "Stable Voting": stable_voting,
+            "Split Cycle": split_cycle, "MWSL": MWSL,
+            "Borda": borda_for_profile_with_ties, "IRV": approval_irv,
+        }
+    return _SU_METHODS
+
+
+def _ballot_type(rmap, ncand):
+    ranked = list(rmap.keys())
+    if len(ranked) == 0:
+        return None
+    ranks = list(rmap.values())
+    has_ties = len(set(ranks)) != len(ranks)
+    truncated = len(ranked) < ncand
+    return {"linear": (not has_ties) and (not truncated), "truncated": truncated,
+            "ties": has_ties, "bullet": len(ranked) == 1}
+
+
+async def superuser_stats():
+    """Analytics over every poll for the super-user dashboard: totals, size and
+    Condorcet distributions, poll-creation time series, ballot-type mix, and
+    pairwise winner disagreement across voting methods. Computed live."""
+    METHODS = _su_methods()
+    MNAMES = list(METHODS.keys())
+
+    def winset(fn, prof):
+        try:
+            return frozenset(str(c) for c in func_timeout(3, fn, args=(prof,)))
+        except Exception:
+            return None
+
+    CAND_B = [(2, 2, "2"), (3, 3, "3"), (4, 4, "4"), (5, 5, "5"), (6, 7, "6-7"),
+              (8, 10, "8-10"), (11, 15, "11-15"), (16, 10**9, "16+")]
+    VOTER_B = [(1, 4, "1-4"), (5, 9, "5-9"), (10, 24, "10-24"), (25, 49, "25-49"),
+               (50, 99, "50-99"), (100, 10**9, "100+")]
+
+    total = with_ballots = total_votes = 0
+    cand_counts, voter_counts = [], []
+    cand_hist, voter_hist, by_month, pair_diff = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    cw = wcw = cl = wcl = cycle = restricted = 0
+    bt_sums = {"linear": 0.0, "truncated": 0.0, "ties": 0.0, "bullet": 0.0}
+    bt_polls = 0
+
+    cursor = db.find({}, {"candidates": 1, "ballots": 1})
+    async for doc in cursor:
+        total += 1
+        cands = doc.get("candidates", []) or []
+        ballots = doc.get("ballots", []) or []
+        ncand, nb = len(cands), len(ballots)
+        for lo, hi, lbl in CAND_B:
+            if lo <= ncand <= hi:
+                cand_hist[lbl] += 1
+                break
+        for lo, hi, lbl in VOTER_B:
+            if lo <= nb <= hi:
+                voter_hist[lbl] += 1
+                break
+        try:
+            by_month[doc["_id"].generation_time.strftime("%Y-%m")] += 1
+        except Exception:
+            pass
+        if nb == 0 or ncand < 2:
+            continue
+        with_ballots += 1
+        total_votes += nb
+        cand_counts.append(ncand)
+        voter_counts.append(nb)
+
+        cand_to_cidx = {c: i for i, c in enumerate(cands)}
+        try:
+            prof = ProfileWithTies([
+                {cand_to_cidx[c]: rank for c, rank in b["ranking"].items() if c in cand_to_cidx}
+                for b in ballots])
+        except Exception:
+            continue
+        if not any(len(r.rmap) > 0 for r in prof.rankings):
+            continue
+
+        types = [t for t in (_ballot_type(b["ranking"], ncand) for b in ballots) if t]
+        if types:
+            for k in bt_sums:
+                bt_sums[k] += sum(1 for t in types if t[k]) / len(types)
+            bt_polls += 1
+
+        try:
+            ci = list(prof.candidates)
+            m = {a: {b: prof.margin(a, b) for b in ci} for a in ci}
+            if prof.condorcet_winner() is not None:
+                cw += 1
+            if any(all(m[o][c] <= 0 for o in ci if o != c) for c in ci):
+                wcw += 1
+            if any(all(m[o][c] > 0 for o in ci if o != c) for c in ci):
+                cl += 1
+            if any(all(m[c][o] <= 0 for o in ci if o != c) for c in ci):
+                wcl += 1
+            g = nx.DiGraph()
+            g.add_nodes_from(ci)
+            for x in ci:
+                for y in ci:
+                    if x != y and m[x][y] > 0:
+                        g.add_edge(x, y)
+            if not nx.is_directed_acyclic_graph(g):
+                cycle += 1
+        except Exception:
+            pass
+
+        if nb >= 5 and ncand >= 3:
+            ws = {name: winset(fn, prof) for name, fn in METHODS.items()}
+            restricted += 1
+            for i in range(len(MNAMES)):
+                for j in range(i + 1, len(MNAMES)):
+                    a, b = MNAMES[i], MNAMES[j]
+                    if ws[a] is not None and ws[b] is not None and ws[a] != ws[b]:
+                        pair_diff[a + "|" + b] += 1
+
+    def median(xs):
+        if not xs:
+            return 0
+        s = sorted(xs)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    return {
+        "total": total,
+        "withb": with_ballots,
+        "total_votes": total_votes,
+        "median_voters": median(voter_counts),
+        "median_candidates": median(cand_counts),
+        "cand": dict(cand_hist),
+        "voter": dict(voter_hist),
+        "cond": {"cw": cw, "weak_cw": wcw, "cl": cl, "weak_cl": wcl, "cycle": cycle, "base": with_ballots},
+        "ts": sorted(by_month.items()),
+        "pair": dict(pair_diff),
+        "restricted": restricted,
+        "bt": {k: (bt_sums[k] / bt_polls if bt_polls else 0) for k in bt_sums},
+    }
 
 
 async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
