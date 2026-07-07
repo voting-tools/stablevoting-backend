@@ -263,11 +263,14 @@ async def get_superuser_polls(pwd: str):
 
 
 @router.get("/polls/superuser/stats", tags=["polls"])
-async def get_superuser_stats(pwd: str):
-    """Password-gated analytics over all polls, for the super-user dashboard."""
+async def get_superuser_stats(pwd: str, background_tasks: BackgroundTasks, refresh: bool = False):
+    """Password-gated analytics over all polls, for the super-user dashboard.
+
+    Returns the cached result immediately; recomputes in the background when the
+    cache is stale or refresh=true is passed."""
     if not superuser_pwd_valid(pwd):
         raise HTTPException(status_code=403, detail="Invalid or missing super-user password.")
-    return await superuser_stats()
+    return await superuser_stats(background_tasks, refresh)
 
 
 @router.delete("/polls/voters/{poll_id}/{voter_id}", tags=["polls"])

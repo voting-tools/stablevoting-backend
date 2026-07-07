@@ -47,6 +47,7 @@ else:
 
 data_base = os.getenv('MONGO_DB_NAME', 'StableVoting')
 db = client[data_base].Polls
+superuser_cache = client[data_base]["superuser_cache"]
 
 
 def _multiple_vote_allowed(pwd):
@@ -133,22 +134,52 @@ def _plurality_ws(prof):
     return frozenset(str(c) for c in scores if scores[c] == mx)
 
 
-_SU_STATS_CACHE = {"data": None, "ts": 0.0}
+_SU_TTL = 6 * 3600           # recompute at most every 6 hours when viewed
+_SU_COMPUTING = {"running": False}
 
 
-async def superuser_stats():
-    """Analytics over every poll for the super-user dashboard: totals, size and
-    Condorcet distributions, poll-creation time series, ballot-type mix, and
-    pairwise winner disagreement across voting methods. Cached for 5 minutes
-    since the full computation takes a few seconds."""
-    if _SU_STATS_CACHE["data"] is not None and (time.time() - _SU_STATS_CACHE["ts"]) < 300:
-        return _SU_STATS_CACHE["data"]
+async def superuser_stats(background_tasks=None, refresh=False):
+    """Return the cached dashboard analytics, recomputing in the background when
+    the cache is missing, stale, or a refresh is requested. The heavy computation
+    (~25s) never blocks the request: callers get the previous result immediately
+    (with computing=True) while a fresh one is computed, or {computing: True} on
+    the very first run."""
+    doc = await superuser_cache.find_one({"_id": "stats"})
+    now = time.time()
+    fresh = doc is not None and not refresh and (now - doc.get("computed_at", 0) < _SU_TTL)
+    if fresh:
+        return {**doc["data"], "cached_at": doc["computed_at"], "computing": False}
+    if background_tasks is not None:
+        background_tasks.add_task(_superuser_compute_and_store)
+    if doc is not None:
+        return {**doc["data"], "cached_at": doc.get("computed_at"), "computing": True}
+    return {"computing": True, "cached_at": None}
+
+
+async def _superuser_compute_and_store():
+    """Run the heavy analytics computation and persist it (single-flight)."""
+    if _SU_COMPUTING["running"]:
+        return
+    _SU_COMPUTING["running"] = True
+    try:
+        data = await _superuser_stats_compute()
+        await superuser_cache.update_one(
+            {"_id": "stats"}, {"$set": {"data": data, "computed_at": time.time()}}, upsert=True,
+        )
+    finally:
+        _SU_COMPUTING["running"] = False
+
+
+async def _superuser_stats_compute():
+    """Analytics over every poll: totals, size and Condorcet distributions,
+    poll-creation time series, ballot-type mix, Stable Voting outcomes, poll
+    status, and pairwise winner disagreement across voting methods."""
     METHODS = _su_methods()
     MNAMES = list(METHODS.keys())
 
-    def winset(fn, prof):
+    def winset(fn, prof, timeout=2):
         try:
-            return frozenset(str(c) for c in func_timeout(2, fn, args=(prof,)))
+            return frozenset(str(c) for c in func_timeout(timeout, fn, args=(prof,)))
         except BaseException:
             return None
 
@@ -235,8 +266,10 @@ async def superuser_stats():
             pass
 
         # Stable Voting winner set (unique vs. tied) + plurality-vs-SV agreement,
-        # using the site's own SV routine so it matches the results page.
-        sv = winset(_sv_winners_only, prof)
+        # using the site's own SV routine so it matches the results page. Computed
+        # once with a generous timeout (this runs in the background, so even the
+        # few slow polls are covered) and reused for the heatmap below.
+        sv = winset(_sv_winners_only, prof, timeout=20)
         if sv is not None:
             if len(sv) == 1:
                 sv_unique += 1
@@ -252,7 +285,8 @@ async def superuser_stats():
                     plur_ne += 1
 
         if nb >= 5 and ncand >= 3:
-            ws = {name: winset(fn, prof) for name, fn in METHODS.items()}
+            ws = {name: winset(fn, prof) for name, fn in METHODS.items() if name != "Stable Voting"}
+            ws["Stable Voting"] = sv  # reuse the generously-computed SV winner set
             restricted += 1
             for name in MNAMES:
                 if ws[name] is not None:
@@ -291,8 +325,6 @@ async def superuser_stats():
         "method_winset": {n: round(wset_sizes[n] / wset_counts[n], 3) for n in MNAMES if wset_counts[n]},
         "bt": {k: (bt_sums[k] / bt_polls if bt_polls else 0) for k in bt_sums},
     }
-    _SU_STATS_CACHE["data"] = result
-    _SU_STATS_CACHE["ts"] = time.time()
     return result
 
 
