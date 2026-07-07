@@ -4,7 +4,7 @@ from typing import Optional
 from io import BytesIO  # ADD THIS
 
 from bson import ObjectId
-from polls.manage import create_poll, update_poll, delete_poll, submit_ballot, delete_ballot, add_rankings, poll_outcome, poll_information, submitted_ranking_information, poll_ranking_information, demo_poll_outcome, delete_voter, regenerate_voter_link, delete_all_ballots, delete_ballot, resend_voter_email
+from polls.manage import create_poll, update_poll, delete_poll, submit_ballot, delete_ballot, add_rankings, poll_outcome, poll_information, submitted_ranking_information, poll_ranking_information, demo_poll_outcome, delete_voter, regenerate_voter_link, delete_all_ballots, delete_ballot, resend_voter_email, superuser_pwd_valid, superuser_list_polls
 from polls.models import CreatePoll, UpdatePoll, PollInfo,  Ballot, PollRankingInfo, RankingsInfo, OutcomeInfo, DemoRankingsInput
 from polls.qr_utils import generate_poll_qr_code  # ADD THIS (note the dot for relative import)
 
@@ -247,7 +247,21 @@ async def generate_qr_code(url: str):
             status_code=500,
             detail=f"Error generating QR code: {str(e)}"
         )
-    
+
+
+@router.get("/polls/superuser/polls", tags=["polls"])
+async def get_superuser_polls(pwd: str):
+    """Password-gated summary of every poll, for the hidden super-user list.
+
+    Requires the SUPERUSER_PWD environment variable to be set and matched;
+    returns 403 otherwise. The response includes owner ids, so it must stay
+    behind the password.
+    """
+    if not superuser_pwd_valid(pwd):
+        raise HTTPException(status_code=403, detail="Invalid or missing super-user password.")
+    return await superuser_list_polls()
+
+
 @router.delete("/polls/voters/{poll_id}/{voter_id}", tags=["polls"])
 async def delete_a_voter(
     poll_id: str, 

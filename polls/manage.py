@@ -49,6 +49,35 @@ def _multiple_vote_allowed(pwd):
     return expected is not None and pwd == expected
 
 
+def superuser_pwd_valid(pwd):
+    """True only when SUPERUSER_PWD is set in the environment and matches."""
+    expected = os.getenv('SUPERUSER_PWD')
+    return bool(expected) and pwd == expected
+
+
+async def superuser_list_polls():
+    """Summary of every poll for the (password-gated) super-user poll list.
+
+    Returns id, title, owner id, candidate count, ballot count, and status —
+    counted server-side so the full ballot/candidate arrays are never shipped.
+    """
+    pipeline = [
+        {"$project": {
+            "_id": 0,
+            "id": {"$toString": "$_id"},
+            "title": {"$ifNull": ["$title", "(untitled)"]},
+            "oid": "$owner_id",
+            "nc": {"$size": {"$ifNull": ["$candidates", []]}},
+            "nb": {"$size": {"$ifNull": ["$ballots", []]}},
+            "done": {"$ifNull": ["$is_completed", False]},
+            "priv": {"$ifNull": ["$is_private", False]},
+        }},
+        {"$sort": {"nb": -1}},
+    ]
+    cursor = await db.aggregate(pipeline)
+    return await cursor.to_list(length=None)
+
+
 async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
     """Create a poll."""
     print("HERE!!!!! creating a poll...")
