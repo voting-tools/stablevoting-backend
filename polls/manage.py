@@ -13,6 +13,7 @@ from pymongo import AsyncMongoClient
 import csv
 import io
 import os
+import time
 from bson import ObjectId
 import humanize
 import networkx as nx
@@ -83,12 +84,20 @@ async def superuser_list_polls():
     return await cursor.to_list(length=None)
 
 
+def _sv_winners_only(prof, curr_cands=None):
+    """Stable Voting winners via the site's own routine (split-cycle based, so it
+    stays feasible on large polls) — matches what the results page shows, unlike
+    pref_voting's raw stable_voting which recurses over every candidate."""
+    ws, _, _ = stable_voting_with_explanations_(prof, curr_cands=curr_cands)
+    return ws
+
+
 _SU_METHODS = None
 def _su_methods():
     global _SU_METHODS
     if _SU_METHODS is None:
         _SU_METHODS = {
-            "Minimax": minimax, "Copeland": copeland, "Stable Voting": stable_voting,
+            "Minimax": minimax, "Copeland": copeland, "Stable Voting": _sv_winners_only,
             "Split Cycle": split_cycle, "MWSL": MWSL,
             "Borda": borda_for_profile_with_ties, "IRV": approval_irv,
         }
@@ -124,10 +133,16 @@ def _plurality_ws(prof):
     return frozenset(str(c) for c in scores if scores[c] == mx)
 
 
+_SU_STATS_CACHE = {"data": None, "ts": 0.0}
+
+
 async def superuser_stats():
     """Analytics over every poll for the super-user dashboard: totals, size and
     Condorcet distributions, poll-creation time series, ballot-type mix, and
-    pairwise winner disagreement across voting methods. Computed live."""
+    pairwise winner disagreement across voting methods. Cached for 5 minutes
+    since the full computation takes a few seconds."""
+    if _SU_STATS_CACHE["data"] is not None and (time.time() - _SU_STATS_CACHE["ts"]) < 300:
+        return _SU_STATS_CACHE["data"]
     METHODS = _su_methods()
     MNAMES = list(METHODS.keys())
 
@@ -219,9 +234,9 @@ async def superuser_stats():
         except Exception:
             pass
 
-        # Stable Voting winner set (unique vs. tied) + plurality-vs-SV agreement.
-        # Skip very large polls, where Stable Voting is infeasible to compute.
-        sv = winset(stable_voting, prof) if ncand <= 12 else None
+        # Stable Voting winner set (unique vs. tied) + plurality-vs-SV agreement,
+        # using the site's own SV routine so it matches the results page.
+        sv = winset(_sv_winners_only, prof)
         if sv is not None:
             if len(sv) == 1:
                 sv_unique += 1
@@ -259,7 +274,7 @@ async def superuser_stats():
         std = (sum((x - mean) ** 2 for x in s) / n) ** 0.5
         return {"mean": round(mean, 1), "median": med, "std": round(std, 1), "min": s[0], "max": s[-1]}
 
-    return {
+    result = {
         "total": total,
         "withb": with_ballots,
         "total_votes": total_votes,
@@ -276,6 +291,9 @@ async def superuser_stats():
         "method_winset": {n: round(wset_sizes[n] / wset_counts[n], 3) for n in MNAMES if wset_counts[n]},
         "bt": {k: (bt_sums[k] / bt_polls if bt_polls else 0) for k in bt_sums},
     }
+    _SU_STATS_CACHE["data"] = result
+    _SU_STATS_CACHE["ts"] = time.time()
+    return result
 
 
 async def create_poll(background_tasks: BackgroundTasks, poll_data: CreatePoll):
