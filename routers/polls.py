@@ -4,7 +4,7 @@ from typing import Optional
 from io import BytesIO  # ADD THIS
 
 from bson import ObjectId
-from polls.manage import create_poll, update_poll, delete_poll, submit_ballot, delete_ballot, add_rankings, poll_outcome, poll_information, submitted_ranking_information, poll_ranking_information, demo_poll_outcome, delete_voter, regenerate_voter_link, delete_all_ballots, delete_ballot, resend_voter_email, superuser_pwd_valid, superuser_list_polls, superuser_stats
+from polls.manage import create_poll, update_poll, delete_poll, submit_ballot, delete_ballot, add_rankings, poll_outcome, poll_ranking, poll_information, submitted_ranking_information, poll_ranking_information, demo_poll_outcome, delete_voter, regenerate_voter_link, delete_all_ballots, delete_ballot, resend_voter_email, superuser_pwd_valid, superuser_list_polls, superuser_stats
 from polls.models import CreatePoll, UpdatePoll, PollInfo,  Ballot, PollRankingInfo, RankingsInfo, OutcomeInfo, DemoRankingsInput
 from polls.qr_utils import generate_poll_qr_code  # ADD THIS (note the dot for relative import)
 
@@ -207,6 +207,19 @@ async def get_poll_outcome(
             headers={"X-Error": "Not found"},
         )
     raise HTTPException(400, "Something went wrong")
+
+@router.get("/polls/ranking/{id}", tags=["polls"])
+async def get_poll_ranking(id: str, oid: Optional[str] = None, vid: Optional[str] = None):
+    """Stable Voting full ranking (winners removed iteratively). Same access
+    control as the outcome. Returns cmap + ordered tiers, each with the results-page
+    explanation payload restricted to the candidates still in contention."""
+    response = await poll_ranking(id, oid, vid)
+    if response is not None and "error" not in response.keys():
+        return response
+    elif response is not None:
+        raise HTTPException(status_code=403, detail=response, headers={"X-Error": "Not found"})
+    raise HTTPException(400, "Something went wrong")
+
 
 @router.post("/polls/demo_outcome", tags=["polls"])
 async def get_demo_poll_outcome(rankings_data: DemoRankingsInput) -> OutcomeInfo:

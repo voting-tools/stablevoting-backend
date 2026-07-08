@@ -1177,6 +1177,98 @@ async def poll_outcome(id, owner_id, voter_id):
     return result
 
 
+def _tier_payload(prof, keep):
+    """Results-page payload (margins / defeats / explanations / splitting numbers /
+    linear order / sv+sc winners) for `prof` restricted to the candidates in `keep`.
+    This is the IDENTICAL computation to poll_outcome, so each ranking tier reuses
+    the exact same explanation the winner page shows."""
+    keep_set = set(keep)
+    rp = ProfileWithTies(
+        [{c: rk for c, rk in b.rmap.items() if c in keep_set} for b in prof.rankings],
+        rcounts=prof.rcounts,
+        candidates=sorted(keep),
+    )
+    cands = list(rp.candidates)
+    margins = {c1: {c2: rp.margin(c1, c2) for c2 in cands} for c1 in cands}
+    condorcet_winner = rp.condorcet_winner()
+    try:
+        sc_defeat = func_timeout(2, split_cycle_defeat, args=(rp,), kwargs=None)
+        sc_winners = [str(c) for c in cands if not any(sc_defeat.has_edge(c2, c) for c2 in cands)]
+        defeat_relation = {str(c): {str(c2): sc_defeat.has_edge(c, c2) for c2 in cands} for c in cands}
+    except FunctionTimedOut:
+        sc_winners = [str(c) for c in split_cycle(rp)]
+        defeat_relation = {str(c): {} for c in cands}
+    try:
+        sv_winners, _, explanations = func_timeout(
+            20, stable_voting_with_explanations_, args=(rp,),
+            kwargs={"curr_cands": None, "mem_sv_winners": {}, "explanations": {}})
+    except FunctionTimedOut:
+        sv_winners = stable_voting(rp)
+        explanations = {}
+    prof_is_linear, linear_order = is_linear(rp)
+    if condorcet_winner is None:
+        try:
+            splitting_numbers = func_timeout(2, get_splitting_numbers, args=(rp,), kwargs=None)
+        except FunctionTimedOut:
+            splitting_numbers = {}
+    else:
+        splitting_numbers = {}
+    return {
+        "margins": margins,
+        "sv_winners": [str(w) for w in sv_winners],
+        "sc_winners": sc_winners,
+        "condorcet_winner": str(condorcet_winner) if condorcet_winner is not None else None,
+        "explanations": explanations,
+        "defeats": defeat_relation,
+        "splitting_numbers": splitting_numbers,
+        "prof_is_linear": prof_is_linear,
+        "linear_order": [str(c) for c in linear_order] if prof_is_linear else [],
+    }
+
+
+async def poll_ranking(id, owner_id, voter_id):
+    """Stable Voting ranking: the Stable Voting winner(s) are rank 1; set them aside
+    and recompute for rank 2, and so on (dense numbering — a tie shares a rank, the
+    next tier gets the next number). Each tier carries the same payload the results
+    page uses, restricted to the candidates still in contention. Access control
+    mirrors poll_outcome."""
+    if not ObjectId.is_valid(id):
+        return {"error": "Poll not found."}
+    document = await db.find_one({"_id": ObjectId(id)})
+    if document is None:
+        return {"error": "Poll not found."}
+    cand_to_cidx = {c: str(i) for i, c in enumerate(document["candidates"])}
+    cmap = {str(cidx): c for c, cidx in cand_to_cidx.items()}
+    is_voter, is_owner = voter_type(document, voter_id, owner_id)
+    can_view = can_view_outcome(
+        document.get("closing_datetime", None), document.get("timezone", None),
+        document.get("is_completed", None), document.get("can_view_outcome_before_closing", False),
+        document.get("show_outcome", True), is_owner, is_voter)
+    base = {"cmap": cmap, "election_id": str(id), "title": str(document["title"]), "can_view": can_view}
+    if not can_view:
+        return {**base, "tiers": []}
+    if len(document.get("ballots", [])) == 0:
+        return {**base, "tiers": []}
+    prof = ProfileWithTies([{cand_to_cidx[c]: rank for c, rank in r["ranking"].items()}
+                            for r in document["ballots"]])
+    if not any(len(list(r.rmap.keys())) > 0 for r in prof.rankings):
+        return {**base, "tiers": []}
+
+    remaining = sorted(prof.candidates)
+    tiers = []
+    rank = 1
+    while remaining and rank <= len(cmap) + 1:
+        payload = _tier_payload(prof, remaining)
+        winners = payload["sv_winners"]
+        if not winners:
+            break
+        tiers.append({"rank": rank, **payload})
+        win_set = set(winners)
+        remaining = [c for c in remaining if c not in win_set]
+        rank += 1
+    return {**base, "tiers": tiers}
+
+
 async def demo_poll_outcome(rankings):
 
     print("Generating poll outcome for ", rankings)
